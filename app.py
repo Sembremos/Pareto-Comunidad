@@ -1,9 +1,9 @@
-# app.py — Pareto con gráfico 80/20 real + Portafolio + Unificado + Sheets DB (fix reset)
-# ---------------------------------------------------------------------------------------
+# app.py — Pareto con gráfico 80/20 real + Portafolio + Unificado + Sheets DB (fixes)
+# -----------------------------------------------------------------------------------
 # Requisitos:
 #   pip install streamlit pandas matplotlib xlsxwriter gspread google-auth
 #   streamlit run app.py
-# ---------------------------------------------------------------------------------------
+# -----------------------------------------------------------------------------------
 
 import io
 from typing import List, Dict
@@ -445,7 +445,10 @@ if seleccion:
     c1, c2 = st.columns([1,1], gap="large")
     with c1:
         st.markdown("**Tabla de Pareto**")
-        st.dataframe(mostrar, use_container_width=True, hide_index=True) if not tabla.empty else st.info("Ingresa frecuencias (>0) para ver la tabla.")
+        if not tabla.empty:
+            st.dataframe(mostrar, use_container_width=True, hide_index=True)
+        else:
+            st.info("Ingresa frecuencias (>0) para ver la tabla.")
     with c2:
         st.markdown("**Gráfico de Pareto**"); dibujar_pareto(tabla, titulo)
 
@@ -512,7 +515,10 @@ else:
 
             cc1, cc2, cc3 = st.columns([1,1,1])
             with cc1:
-                st.dataframe(mostrar_g, use_container_width=True, hide_index=True) if not mostrar_g.empty else st.info("Este pareto no tiene frecuencias > 0.")
+                if not mostrar_g.empty:
+                    st.dataframe(mostrar_g, use_container_width=True, hide_index=True)
+                else:
+                    st.info("Este pareto no tiene frecuencias > 0.")
             with cc2:
                 st.markdown("**Gráfico**"); dibujar_pareto(tabla_g, f"Pareto — {nom}")
             with cc3:
@@ -557,7 +563,10 @@ else:
         cu1, cu2 = st.columns([1,1], gap="large")
         with cu1:
             st.markdown("**Tabla Unificada**")
-            st.dataframe(mostrar_u, use_container_width=True, hide_index=True) if not mostrar_u.empty else st.info("Sin datos > 0 en la combinación seleccionada.")
+            if not mostrar_u.empty:
+                st.dataframe(mostrar_u, use_container_width=True, hide_index=True)
+            else:
+                st.info("Sin datos > 0 en la combinación seleccionada.")
         with cu2:
             st.markdown("**Gráfico Unificado**"); dibujar_pareto(tabla_unif, titulo_unif or "Pareto Unificado")
         if not tabla_unif.empty:
@@ -570,7 +579,6 @@ else:
             )
     else:
         st.info("Selecciona 2+ paretos en el multiselect o usa el botón 'Unificar TODOS'.")
-
 
 
 
