@@ -195,8 +195,6 @@ CATALOGO: List[Dict[str, str]] = [
     {"categoria": "Delito", "descriptor": "Robo de ganado y agrícola"},
     {"categoria": "Delito", "descriptor": "Robo de equipo agrícola"},
 ]
-
-
 # ============================================================================
 # 2) UTILIDADES BASE
 # ============================================================================
@@ -374,7 +372,6 @@ def sheets_guardar_pareto(nombre: str, freq_map: Dict[str, int], sobrescribir: b
         if others: ws.append_rows(others, value_input_option="RAW")
     rows_new = [[nombre, d, int(f)] for d, f in normalizar_freq_map(freq_map).items()]
     if rows_new: ws.append_rows(rows_new, value_input_option="RAW")
-
 # ============================================================================
 # 5) ESTADO DE SESIÓN (con flag de reseteo)
 # ============================================================================
@@ -409,7 +406,7 @@ with c_t3:
     if st.button("🔄 Recargar portafolio desde Sheets"):
         st.session_state["portafolio"] = sheets_cargar_portafolio()
         st.success("Portafolio recargado desde Google Sheets.")
-        st.experimental_rerun()
+        st.rerun()
 
 cat_df = pd.DataFrame(CATALOGO).sort_values(["categoria","descriptor"]).reset_index(drop=True)
 opciones = cat_df["descriptor"].tolist()
@@ -470,7 +467,7 @@ if seleccion:
                     st.warning(f"Se guardó en la sesión, pero hubo un problema con Sheets: {e}")
                 # Activar flag de reseteo y re-ejecutar
                 st.session_state["reset_after_save"] = True
-                st.experimental_rerun()
+                st.rerun()
     with col_g2:
         if not tabla.empty:
             st.download_button(
@@ -481,7 +478,6 @@ if seleccion:
             )
 else:
     st.info("Selecciona al menos un descriptor para continuar. Tus frecuencias se conservarán si luego agregas más descriptores.")
-
 # ============================================================================
 # 7) PORTAFOLIO, UNIFICADO Y DESCARGAS
 # ============================================================================
@@ -514,6 +510,7 @@ else:
                 mostrar_g["porcentaje"] = mostrar_g["porcentaje"].map(lambda x: f"{x:.2f}%")
                 mostrar_g["porcentaje acumulado"] = mostrar_g["porcentaje acumulado"].map(lambda x: f"{x:.2f}%")
 
+
             cc1, cc2, cc3 = st.columns([1,1,1])
             with cc1:
                 if not mostrar_g.empty:
@@ -540,7 +537,7 @@ else:
                     try:
                         del st.session_state["portafolio"][nom]
                         st.warning(f"Pareto '{nom}' eliminado del portafolio de la sesión.")
-                        st.experimental_rerun()
+                        st.rerun()
                     except Exception:
                         st.error("No se pudo eliminar. Intenta de nuevo.")
 
