@@ -196,6 +196,7 @@ CATALOGO: List[Dict[str, str]] = [
     {"categoria": "Delito", "descriptor": "Robo de equipo agrícola"},
 ]
 
+
 # ============================================================================
 # 2) UTILIDADES BASE
 # ============================================================================
@@ -579,6 +580,7 @@ else:
             )
     else:
         st.info("Selecciona 2+ paretos en el multiselect o usa el botón 'Unificar TODOS'.")
+
 
 
 
