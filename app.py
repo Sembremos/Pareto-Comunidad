@@ -1,9 +1,9 @@
-# app.py — Pareto con gráfico 80/20 real y tabla/Excel con segmento fijo "80%"
-# ---------------------------------------------------------------------------
+# app.py — Pareto con gráfico 80/20 real + Portafolio de Paretos y Unificado
+# ----------------------------------------------------------------------------
 # Requisitos:
 #   pip install streamlit pandas matplotlib xlsxwriter
 #   streamlit run app.py
-# ---------------------------------------------------------------------------
+# ----------------------------------------------------------------------------
 
 import io
 from typing import List, Dict
@@ -189,7 +189,7 @@ CATALOGO: List[Dict[str, str]] = [
 ]
 
 # ============================================================================
-# 2) UTILIDADES
+# 2) UTILIDADES BASE
 # ============================================================================
 ORANGE = "#FF8C00"  # naranja vivo
 SKY    = "#87CEEB"  # celeste
@@ -328,15 +328,75 @@ def exportar_excel_con_grafico(df_par: pd.DataFrame, titulo: str) -> bytes:
     return output.getvalue()
 
 # ============================================================================
-# 3) UI + PERSISTENCIA
+# 3) UTILIDADES DE PORTAFOLIO (múltiples paretos)
+# ============================================================================
+def _map_descriptor_a_categoria() -> Dict[str, str]:
+    df = pd.DataFrame(CATALOGO)
+    return dict(zip(df["descriptor"], df["categoria"]))
+
+DESC2CAT = _map_descriptor_a_categoria()
+
+def normalizar_freq_map(freq_map: Dict[str, int]) -> Dict[str, int]:
+    out = {}
+    for d, v in (freq_map or {}).items():
+        try:
+            vv = int(pd.to_numeric(v, errors="coerce"))
+            if vv > 0:
+                out[d] = vv
+        except Exception:
+            continue
+    return out
+
+def df_desde_freq_map(freq_map: Dict[str, int]) -> pd.DataFrame:
+    """Construye DF (descriptor, categoria, frecuencia) desde un map {descriptor: freq}."""
+    items = []
+    for d, f in normalizar_freq_map(freq_map).items():
+        items.append({
+            "descriptor": d,
+            "categoria": DESC2CAT.get(d, "—"),
+            "frecuencia": int(f),
+        })
+    df = pd.DataFrame(items)
+    if df.empty:
+        return pd.DataFrame(columns=["descriptor", "categoria", "frecuencia"])
+    return df
+
+def combinar_maps(maps: List[Dict[str, int]]) -> Dict[str, int]:
+    """Suma frecuencias por descriptor a partir de varios maps."""
+    total = {}
+    for m in maps:
+        for d, f in normalizar_freq_map(m).items():
+            total[d] = total.get(d, 0) + int(f)
+    return total
+
+def info_pareto(freq_map: Dict[str, int]) -> Dict[str, int]:
+    d = normalizar_freq_map(freq_map)
+    return {
+        "descriptores": len(d),
+        "total": int(sum(d.values())),
+    }
+
+# ============================================================================
+# 4) ESTADO DE SESIÓN
 # ============================================================================
 if "freq_map" not in st.session_state:
-    st.session_state.freq_map = {}  # {descriptor: frecuencia}
+    st.session_state.freq_map = {}  # {descriptor: frecuencia} del "pareto en edición"
 
+if "portafolio" not in st.session_state:
+    # Diccionario de paretos guardados: {nombre: {descriptor: freq}}
+    st.session_state.portafolio: Dict[str, Dict[str, int]] = {}
+
+# ============================================================================
+# 5) UI PRINCIPAL (Editor + Guardado + Visualización)
+# ============================================================================
 st.title("Pareto de Descriptores")
 
-
-titulo = st.text_input("Título del Pareto (opcional)", value="Pareto Comunidad")
+# --- Título del pareto en edición ---
+c_t1, c_t2 = st.columns([2, 1])
+with c_t1:
+    titulo = st.text_input("Título del Pareto (opcional)", value="Pareto Comunidad")
+with c_t2:
+    nombre_para_guardar = st.text_input("Nombre para guardar este Pareto", value="Comunidad")
 
 # Selector múltiple
 cat_df = pd.DataFrame(CATALOGO).sort_values(["categoria", "descriptor"]).reset_index(drop=True)
@@ -360,7 +420,7 @@ if seleccion:
         },
     )
 
-    # Persistir cambios
+    # Persistir cambios a freq_map del editor
     for _, row in edit.iterrows():
         st.session_state.freq_map[row["descriptor"]] = int(row["frecuencia"])
 
@@ -368,8 +428,8 @@ if seleccion:
     df_in = edit[["descriptor", "categoria"]].copy()
     df_in["frecuencia"] = df_in["descriptor"].map(st.session_state.freq_map).fillna(0).astype(int)
 
-    # ---- Cálculo y visualización ----
-    st.subheader("3) Pareto")
+    # ---- Cálculo y visualización del pareto en edición ----
+    st.subheader("3) Pareto (en edición)")
     tabla = calcular_pareto(df_in)
 
     # Tabla en el orden solicitado y con nombres visibles
@@ -392,16 +452,163 @@ if seleccion:
         st.markdown("**Gráfico de Pareto**")
         dibujar_pareto(tabla, titulo)
 
-    st.subheader("4) Exportar")
-    if not tabla.empty:
-        st.download_button(
-            "⬇️ Descargar Excel con gráfico",
-            data=exportar_excel_con_grafico(tabla, titulo),
-            file_name="pareto_descriptores.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        )
+    st.subheader("4) Guardar / Descargar")
+    col_g1, col_g2, col_g3 = st.columns([1,1,2])
+    with col_g1:
+        sobrescribir = st.checkbox("Sobrescribir si existe", value=True)
+        if st.button("💾 Guardar este Pareto"):
+            nombre = nombre_para_guardar.strip()
+            if not nombre:
+                st.warning("Indica un nombre para guardar el Pareto.")
+            else:
+                if (not sobrescribir) and (nombre in st.session_state.portafolio):
+                    st.error(f"Ya existe un Pareto llamado '{nombre}'. Marca 'Sobrescribir' o usa otro nombre.")
+                else:
+                    # Guardar el map normalizado
+                    st.session_state.portafolio[nombre] = normalizar_freq_map(st.session_state.freq_map)
+                    st.success(f"Pareto '{nombre}' guardado en el portafolio.")
+
+    with col_g2:
+        if not tabla.empty:
+            st.download_button(
+                "⬇️ Excel del Pareto (edición)",
+                data=exportar_excel_con_grafico(tabla, titulo),
+                file_name=f"pareto_{(nombre_para_guardar or 'edicion').lower().replace(' ','_')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
 else:
     st.info("Selecciona al menos un descriptor para continuar. Tus frecuencias se conservarán si luego agregas más descriptores.")
+
+# ============================================================================
+# 6) PORTAFOLIO DE PARETOS (listado, ver, cargar, descargar)
+# ============================================================================
+st.markdown("---")
+st.header("📁 Portafolio de Paretos (guardados en la sesión)")
+
+if not st.session_state.portafolio:
+    st.info("Aún no hay paretos guardados. Guarda el primero desde la sección anterior.")
+else:
+    # Panel de selección para unificado
+    st.subheader("Selecciona paretos para Unificar")
+    nombres = sorted(st.session_state.portafolio.keys())
+    sel_unif = st.multiselect("Elige 2 o más paretos para combinar (o usa el botón de 'Unificar todos')", options=nombres, default=[])
+
+    c_unif1, c_unif2 = st.columns([1,1])
+    with c_unif1:
+        unificar_todos = st.button("🔗 Unificar TODOS los paretos guardados")
+    with c_unif2:
+        st.caption(f"Total de paretos guardados: **{len(nombres)}**")
+
+    st.markdown("### Paretos guardados")
+    for nom in nombres:
+        freq_map = st.session_state.portafolio[nom]
+        meta = info_pareto(freq_map)
+
+        with st.expander(f"🔹 {nom} — {meta['descriptores']} descriptores | Total: {meta['total']}"):
+            # Construir DF y pareto de este guardado
+            df_base = df_desde_freq_map(freq_map)
+            tabla_g = calcular_pareto(df_base)
+
+            # Tabla formateada
+            mostrar_g = tabla_g.copy()
+            mostrar_g = mostrar_g[["categoria", "descriptor", "frecuencia",
+                                   "porcentaje", "pct_acum", "acumulado", "segmento"]]
+            mostrar_g = mostrar_g.rename(columns={"pct_acum": "porcentaje acumulado"})
+            if not mostrar_g.empty:
+                mostrar_g["porcentaje"] = mostrar_g["porcentaje"].map(lambda x: f"{x:.2f}%")
+                mostrar_g["porcentaje acumulado"] = mostrar_g["porcentaje acumulado"].map(lambda x: f"{x:.2f}%")
+
+            cc1, cc2, cc3 = st.columns([1,1,1])
+            with cc1:
+                if not mostrar_g.empty:
+                    st.dataframe(mostrar_g, use_container_width=True, hide_index=True)
+                else:
+                    st.info("Este pareto no tiene frecuencias > 0.")
+
+            with cc2:
+                st.markdown("**Gráfico**")
+                dibujar_pareto(tabla_g, f"Pareto — {nom}")
+
+            with cc3:
+                st.markdown("**Acciones**")
+                # Descargar Excel de este pareto
+                if not tabla_g.empty:
+                    st.download_button(
+                        "⬇️ Excel de este Pareto",
+                        data=exportar_excel_con_grafico(tabla_g, f"Pareto — {nom}"),
+                        file_name=f"pareto_{nom.lower().replace(' ','_')}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key=f"dl_{nom}",
+                    )
+
+                # Cargar al editor
+                if st.button("📥 Cargar este Pareto al editor", key=f"load_{nom}"):
+                    st.session_state.freq_map = dict(freq_map)  # clonar
+                    st.success(f"Pareto '{nom}' cargado al editor (arriba). Desplázate para editar.")
+
+                # Eliminar del portafolio
+                if st.button("🗑️ Eliminar de la sesión", key=f"del_{nom}"):
+                    try:
+                        del st.session_state.portafolio[nom]
+                        st.warning(f"Pareto '{nom}' eliminado del portafolio.")
+                        st.experimental_rerun()
+                    except Exception:
+                        st.error("No se pudo eliminar. Intenta de nuevo.")
+
+    # ========================================================================
+    # 7) PARETO UNIFICADO (selección o todos)
+    # ========================================================================
+    st.markdown("---")
+    st.header("🔗 Pareto Unificado (por filtro o general)")
+
+    maps_a_unir = []
+    titulo_unif = ""
+
+    if unificar_todos and nombres:
+        maps_a_unir = [st.session_state.portafolio[n] for n in nombres]
+        titulo_unif = "Pareto General (todos los paretos)"
+    elif len(sel_unif) >= 2:
+        maps_a_unir = [st.session_state.portafolio[n] for n in sel_unif]
+        titulo_unif = f"Unificado: {', '.join(sel_unif)}"
+
+    if maps_a_unir:
+        combinado = combinar_maps(maps_a_unir)
+        df_unif = df_desde_freq_map(combinado)
+        tabla_unif = calcular_pareto(df_unif)
+
+        # Tabla formateada
+        mostrar_u = tabla_unif.copy()
+        mostrar_u = mostrar_u[["categoria", "descriptor", "frecuencia",
+                               "porcentaje", "pct_acum", "acumulado", "segmento"]]
+        mostrar_u = mostrar_u.rename(columns={"pct_acum": "porcentaje acumulado"})
+        if not mostrar_u.empty:
+            mostrar_u["porcentaje"] = mostrar_u["porcentaje"].map(lambda x: f"{x:.2f}%")
+            mostrar_u["porcentaje acumulado"] = mostrar_u["porcentaje acumulado"].map(lambda x: f"{x:.2f}%")
+
+        cu1, cu2 = st.columns([1,1], gap="large")
+        with cu1:
+            st.markdown("**Tabla Unificada**")
+            if mostrar_u.empty:
+                st.info("Sin datos > 0 en la combinación seleccionada.")
+            else:
+                st.dataframe(mostrar_u, use_container_width=True, hide_index=True)
+
+        with cu2:
+            st.markdown("**Gráfico Unificado**")
+            dibujar_pareto(tabla_unif, titulo_unif or "Pareto Unificado")
+
+        if not tabla_unif.empty:
+            st.download_button(
+                "⬇️ Descargar Excel del Pareto Unificado",
+                data=exportar_excel_con_grafico(tabla_unif, titulo_unif or "Pareto Unificado"),
+                file_name="pareto_unificado.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="dl_unificado",
+            )
+    else:
+        st.info("Selecciona 2+ paretos en el multiselect o usa el botón 'Unificar TODOS'.")
+
+
 
 
 
