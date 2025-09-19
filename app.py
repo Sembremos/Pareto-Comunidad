@@ -1,9 +1,9 @@
-# app.py — Pareto con gráfico 80/20 real + Portafolio de Paretos y Unificado
-# ----------------------------------------------------------------------------
+# app.py — Pareto con gráfico 80/20 real + Portafolio de Paretos y Unificado + Sheets DB
+# --------------------------------------------------------------------------------------
 # Requisitos:
-#   pip install streamlit pandas matplotlib xlsxwriter
+#   pip install streamlit pandas matplotlib xlsxwriter gspread google-auth
 #   streamlit run app.py
-# ----------------------------------------------------------------------------
+# --------------------------------------------------------------------------------------
 
 import io
 from typing import List, Dict
@@ -13,7 +13,16 @@ import pandas as pd
 import streamlit as st
 import matplotlib.pyplot as plt
 
+# ====== Google Sheets (DB) ======
+import gspread
+from google.oauth2.service_account import Credentials
+
+# URL de tu hoja (DB)
+SPREADSHEET_URL = "https://docs.google.com/spreadsheets/d/1cf-avzRjtBXcqr69WfrrsTAegm0PMAe8LgjeLpfcS5g/edit?usp=sharing"
+WS_PARETOS = "paretos"  # hoja donde se guardan los paretos (nombre, descriptor, frecuencia)
+
 st.set_page_config(page_title="Pareto de Descriptores", layout="wide")
+
 
 # ============================================================================
 # 1) CATÁLOGO EMBEBIDO (normalizado; edita aquí si deseas agregar/quitar)
@@ -188,6 +197,7 @@ CATALOGO: List[Dict[str, str]] = [
     {"categoria": "Delito", "descriptor": "Robo de equipo agrícola"},
 ]
 
+
 # ============================================================================
 # 2) UTILIDADES BASE
 # ============================================================================
@@ -327,6 +337,7 @@ def exportar_excel_con_grafico(df_par: pd.DataFrame, titulo: str) -> bytes:
 
     return output.getvalue()
 
+
 # ============================================================================
 # 3) UTILIDADES DE PORTAFOLIO (múltiples paretos)
 # ============================================================================
@@ -376,32 +387,118 @@ def info_pareto(freq_map: Dict[str, int]) -> Dict[str, int]:
         "total": int(sum(d.values())),
     }
 
+
 # ============================================================================
-# 4) ESTADO DE SESIÓN
+# 4) GOOGLE SHEETS HELPERS
+# ============================================================================
+SCOPES = [
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive",
+]
+
+def _gc():
+    # Agrega tu Service Account a st.secrets["gcp_service_account"]
+    creds = Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=SCOPES)
+    return gspread.authorize(creds)
+
+def _open_sheet():
+    gc = _gc()
+    return gc.open_by_url(SPREADSHEET_URL)
+
+def _ensure_ws(sh, title: str, header: List[str]):
+    try:
+        ws = sh.worksheet(title)
+    except gspread.exceptions.WorksheetNotFound:
+        ws = sh.add_worksheet(title=title, rows=1000, cols=10)
+        ws.append_row(header)
+        return ws
+    # Garantiza encabezado correcto
+    values = ws.get_all_values()
+    if not values:
+        ws.append_row(header)
+    else:
+        first = values[0]
+        if [c.strip().lower() for c in first] != [c.strip().lower() for c in header]:
+            ws.clear()
+            ws.append_row(header)
+    return ws
+
+def sheets_cargar_portafolio() -> Dict[str, Dict[str, int]]:
+    """Carga todos los paretos del WS y los agrupa por nombre."""
+    try:
+        sh = _open_sheet()
+        ws = _ensure_ws(sh, WS_PARETOS, ["nombre", "descriptor", "frecuencia"])
+        rows = ws.get_all_records()
+        port: Dict[str, Dict[str, int]] = {}
+        for r in rows:
+            nom = str(r.get("nombre", "")).strip()
+            desc = str(r.get("descriptor", "")).strip()
+            freq = int(pd.to_numeric(r.get("frecuencia", 0), errors="coerce") or 0)
+            if not nom or not desc or freq <= 0:
+                continue
+            bucket = port.setdefault(nom, {})
+            bucket[desc] = bucket.get(desc, 0) + freq
+        return port
+    except Exception:
+        return {}
+
+def sheets_guardar_pareto(nombre: str, freq_map: Dict[str, int], sobrescribir: bool = True):
+    """Guarda (o sobrescribe) un pareto en la hoja 'paretos'."""
+    sh = _open_sheet()
+    ws = _ensure_ws(sh, WS_PARETOS, ["nombre", "descriptor", "frecuencia"])
+
+    if sobrescribir:
+        # Reconstruimos la hoja sin las filas del 'nombre' que vamos a reemplazar
+        vals = ws.get_all_values()
+        header = vals[0] if vals else ["nombre", "descriptor", "frecuencia"]
+        others = [r for r in vals[1:] if (len(r) > 0 and r[0].strip().lower() != nombre.strip().lower())]
+        ws.clear()
+        ws.update("A1", [header])
+        if others:
+            ws.append_rows(others, value_input_option="RAW")
+
+    rows_new = [[nombre, d, int(f)] for d, f in normalizar_freq_map(freq_map).items()]
+    if rows_new:
+        ws.append_rows(rows_new, value_input_option="RAW")
+
+
+# ============================================================================
+# 5) ESTADO DE SESIÓN
 # ============================================================================
 if "freq_map" not in st.session_state:
     st.session_state.freq_map = {}  # {descriptor: frecuencia} del "pareto en edición"
 
 if "portafolio" not in st.session_state:
-    # Diccionario de paretos guardados: {nombre: {descriptor: freq}}
     st.session_state.portafolio: Dict[str, Dict[str, int]] = {}
 
+# Primer intento de cargar portafolio desde Sheets (si vacío)
+if not st.session_state.portafolio:
+    loaded = sheets_cargar_portafolio()
+    if loaded:
+        st.session_state.portafolio.update(loaded)
+
+
 # ============================================================================
-# 5) UI PRINCIPAL (Editor + Guardado + Visualización)
+# 6) UI PRINCIPAL (Editor + Guardado + Visualización)
 # ============================================================================
 st.title("Pareto de Descriptores")
 
 # --- Título del pareto en edición ---
-c_t1, c_t2 = st.columns([2, 1])
+c_t1, c_t2, c_t3 = st.columns([2, 1, 1])
 with c_t1:
     titulo = st.text_input("Título del Pareto (opcional)", value="Pareto Comunidad")
 with c_t2:
     nombre_para_guardar = st.text_input("Nombre para guardar este Pareto", value="Comunidad")
+with c_t3:
+    if st.button("🔄 Recargar portafolio desde Sheets"):
+        st.session_state.portafolio = sheets_cargar_portafolio()
+        st.success("Portafolio recargado desde Google Sheets.")
+        st.experimental_rerun()
 
-# Selector múltiple
+# Selector múltiple (con key para poder resetearlo al guardar)
 cat_df = pd.DataFrame(CATALOGO).sort_values(["categoria", "descriptor"]).reset_index(drop=True)
 opciones = cat_df["descriptor"].tolist()
-seleccion = st.multiselect("1) Escoge uno o varios descriptores", options=opciones, default=[])
+seleccion = st.multiselect("1) Escoge uno o varios descriptores", options=opciones, default=[], key="msel")
 
 st.subheader("2) Asigna la frecuencia")
 if seleccion:
@@ -461,12 +558,22 @@ if seleccion:
             if not nombre:
                 st.warning("Indica un nombre para guardar el Pareto.")
             else:
-                if (not sobrescribir) and (nombre in st.session_state.portafolio):
-                    st.error(f"Ya existe un Pareto llamado '{nombre}'. Marca 'Sobrescribir' o usa otro nombre.")
-                else:
-                    # Guardar el map normalizado
-                    st.session_state.portafolio[nombre] = normalizar_freq_map(st.session_state.freq_map)
-                    st.success(f"Pareto '{nombre}' guardado en el portafolio.")
+                # Guarda en portafolio en memoria
+                st.session_state.portafolio[nombre] = normalizar_freq_map(st.session_state.freq_map)
+                # Guarda en Google Sheets
+                try:
+                    sheets_guardar_pareto(nombre, st.session_state.freq_map, sobrescribir=sobrescribir)
+                    st.success(f"Pareto '{nombre}' guardado en Google Sheets y en la sesión.")
+                except Exception as e:
+                    st.warning(f"Se guardó en la sesión, pero hubo un problema con Sheets: {e}")
+
+                # ======= REINICIAR PARA EMPEZAR UN NUEVO PARETO EN CERO =======
+                st.session_state.freq_map = {}      # todas las frecuencias a 0
+                st.session_state.msel = []          # limpia selección del multiselect
+                # limpiar editor para evitar arrastre de valores
+                if "editor_freq" in st.session_state:
+                    del st.session_state["editor_freq"]
+                st.experimental_rerun()
 
     with col_g2:
         if not tabla.empty:
@@ -479,11 +586,12 @@ if seleccion:
 else:
     st.info("Selecciona al menos un descriptor para continuar. Tus frecuencias se conservarán si luego agregas más descriptores.")
 
+
 # ============================================================================
-# 6) PORTAFOLIO DE PARETOS (listado, ver, cargar, descargar)
+# 7) PORTAFOLIO DE PARETOS (listado, ver, cargar, descargar)
 # ============================================================================
 st.markdown("---")
-st.header("📁 Portafolio de Paretos (guardados en la sesión)")
+st.header("📁 Portafolio de Paretos (guardados)")
 
 if not st.session_state.portafolio:
     st.info("Aún no hay paretos guardados. Guarda el primero desde la sección anterior.")
@@ -491,7 +599,7 @@ else:
     # Panel de selección para unificado
     st.subheader("Selecciona paretos para Unificar")
     nombres = sorted(st.session_state.portafolio.keys())
-    sel_unif = st.multiselect("Elige 2 o más paretos para combinar (o usa el botón de 'Unificar todos')", options=nombres, default=[])
+    sel_unif = st.multiselect("Elige 2 o más paretos para combinar (o usa el botón de 'Unificar todos')", options=nombres, default=[], key="sel_unif")
 
     c_unif1, c_unif2 = st.columns([1,1])
     with c_unif1:
@@ -544,19 +652,20 @@ else:
                 # Cargar al editor
                 if st.button("📥 Cargar este Pareto al editor", key=f"load_{nom}"):
                     st.session_state.freq_map = dict(freq_map)  # clonar
+                    st.session_state.msel = list(freq_map.keys())
                     st.success(f"Pareto '{nom}' cargado al editor (arriba). Desplázate para editar.")
 
-                # Eliminar del portafolio
+                # Eliminar del portafolio (solo en sesión)
                 if st.button("🗑️ Eliminar de la sesión", key=f"del_{nom}"):
                     try:
                         del st.session_state.portafolio[nom]
-                        st.warning(f"Pareto '{nom}' eliminado del portafolio.")
+                        st.warning(f"Pareto '{nom}' eliminado del portafolio de la sesión.")
                         st.experimental_rerun()
                     except Exception:
                         st.error("No se pudo eliminar. Intenta de nuevo.")
 
     # ========================================================================
-    # 7) PARETO UNIFICADO (selección o todos)
+    # 8) PARETO UNIFICADO (selección o todos)
     # ========================================================================
     st.markdown("---")
     st.header("🔗 Pareto Unificado (por filtro o general)")
@@ -567,9 +676,9 @@ else:
     if unificar_todos and nombres:
         maps_a_unir = [st.session_state.portafolio[n] for n in nombres]
         titulo_unif = "Pareto General (todos los paretos)"
-    elif len(sel_unif) >= 2:
-        maps_a_unir = [st.session_state.portafolio[n] for n in sel_unif]
-        titulo_unif = f"Unificado: {', '.join(sel_unif)}"
+    elif len(st.session_state.get("sel_unif", [])) >= 2:
+        maps_a_unir = [st.session_state.portafolio[n] for n in st.session_state["sel_unif"]]
+        titulo_unif = f"Unificado: {', '.join(st.session_state['sel_unif'])}"
 
     if maps_a_unir:
         combinado = combinar_maps(maps_a_unir)
